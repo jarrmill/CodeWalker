@@ -7,11 +7,16 @@ import { MastraCompositeStore } from '@mastra/core/storage';
 import { Observability, MastraStorageExporter, MastraPlatformExporter, SensitiveDataFilter } from '@mastra/observability';
 import { weatherWorkflow } from './workflows/weather-workflow';
 import { weatherAgent } from './agents/weather-agent';
+import { shortcutAgent } from './agents/shortcut-agent';
+import { githubAgent } from './agents/github-agent';
 import { toolCallAppropriatenessScorer, completenessScorer, translationScorer } from './scorers/weather-scorer';
+import { shortcutMyTicketsTool, shortcutGetStoryTool } from './tools/shortcut-tool';
+import { githubOpenPullRequestsTool } from './tools/github-tool';
 
 export const mastra = new Mastra({
   workflows: { weatherWorkflow },
-  agents: { weatherAgent },
+  agents: { weatherAgent, shortcutAgent, githubAgent },
+  tools: { shortcutMyTicketsTool, shortcutGetStoryTool, githubOpenPullRequestsTool },
   scorers: { toolCallAppropriatenessScorer, completenessScorer, translationScorer },
   storage: new MastraCompositeStore({
     id: 'composite-storage',
