@@ -1,9 +1,9 @@
 
 import { Mastra } from '@mastra/core/mastra';
 import { PinoLogger } from '@mastra/loggers';
-import { LibSQLStore } from '@mastra/libsql';
-import { DuckDBStore } from "@mastra/duckdb";
-import { MastraCompositeStore } from '@mastra/core/storage';
+import { PostgresStore } from '@mastra/pg';
+import { MastraAuthSupabase } from '@mastra/auth-supabase';
+import { VercelDeployer } from '@mastra/deployer-vercel';
 import { Observability, MastraStorageExporter, MastraPlatformExporter, SensitiveDataFilter } from '@mastra/observability';
 import { weatherWorkflow } from './workflows/weather-workflow';
 import { weatherAgent } from './agents/weather-agent';
@@ -18,16 +18,17 @@ export const mastra = new Mastra({
   agents: { weatherAgent, shortcutAgent, githubAgent },
   tools: { shortcutMyTicketsTool, shortcutGetStoryTool, githubOpenPullRequestsTool },
   scorers: { toolCallAppropriatenessScorer, completenessScorer, translationScorer },
-  storage: new MastraCompositeStore({
-    id: 'composite-storage',
-    default: new LibSQLStore({
-      id: "mastra-storage",
-      url: "file:./mastra.db",
-    }),
-    domains: {
-      observability: await new DuckDBStore().getStore('observability'),
-    }
+  storage: new PostgresStore({
+    id: 'mastra-storage',
+    connectionString: process.env.DATABASE_URL!,
   }),
+  deployer: new VercelDeployer(),
+  server: {
+    auth: new MastraAuthSupabase({
+      url: process.env.SUPABASE_URL,
+      anonKey: process.env.SUPABASE_ANON_KEY,
+    }),
+  },
   logger: new PinoLogger({
     name: 'Mastra',
     level: 'info',
