@@ -21,6 +21,9 @@ export const mastra = new Mastra({
   storage: new PostgresStore({
     id: 'mastra-storage',
     connectionString: process.env.DATABASE_URL!,
+    // Supabase's pooler serves a cert Node doesn't have in its trust store,
+    // which fails the default verify-full check. Encrypt without chain verification.
+    ssl: { rejectUnauthorized: false },
   }),
   deployer: new VercelDeployer(),
   server: {

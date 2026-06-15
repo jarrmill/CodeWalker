@@ -1,10 +1,5 @@
-output.txt
+# Subproject node_modules and build artefacts are ignored in their own .gitignore files.
+# This root ignore covers anything that might land at the repo root.
 node_modules
-dist
-.mastra
-.env.development
 .env
-*.db
-*.db-*
-.netlify
-.vercel
+.DS_Store
