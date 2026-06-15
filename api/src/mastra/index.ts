@@ -5,6 +5,7 @@ import { PostgresStore } from '@mastra/pg';
 import { MastraAuthSupabase } from '@mastra/auth-supabase';
 import { VercelDeployer } from '@mastra/deployer-vercel';
 import { Observability, MastraStorageExporter, MastraPlatformExporter, SensitiveDataFilter } from '@mastra/observability';
+import { chatRoute } from '@mastra/ai-sdk';
 import { weatherWorkflow } from './workflows/weather-workflow';
 import { weatherAgent } from './agents/weather-agent';
 import { shortcutAgent } from './agents/shortcut-agent';
@@ -31,6 +32,9 @@ export const mastra = new Mastra({
       url: process.env.SUPABASE_URL,
       anonKey: process.env.SUPABASE_ANON_KEY,
     }),
+    apiRoutes: [
+      chatRoute({ path: '/chat', agent: 'githubAgent', version: 'v6' }),
+    ],
   },
   logger: new PinoLogger({
     name: 'Mastra',

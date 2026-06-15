@@ -9,8 +9,11 @@
     "generate": "nuxt generate"
   },
   "dependencies": {
+    "@ai-sdk/vue": "^3.0.205",
+    "@mastra/client-js": "^1.24.0",
     "@nuxt/ui": "^4.8.2",
     "@nuxtjs/supabase": "^2.0.9",
+    "ai": "^6.0.205",
     "nuxt": "^4.4.8"
   },
   "devDependencies": {

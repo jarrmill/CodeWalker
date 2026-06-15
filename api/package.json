@@ -17,6 +17,7 @@
     "node": ">=22.13.0"
   },
   "dependencies": {
+    "@mastra/ai-sdk": "^1.4.5",
     "@mastra/auth-supabase": "^1.0.1",
     "@mastra/core": "^1.42.0",
     "@mastra/deployer-vercel": "^1.1.37",

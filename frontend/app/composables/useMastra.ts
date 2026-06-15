@@ -1,46 +1,64 @@
+import { MastraClient } from '@mastra/client-js'
+import { DefaultChatTransport } from 'ai'
+
 /**
- * Provides a fetch wrapper that automatically attaches the current
- * Supabase session's Bearer token to every Mastra API request.
+ * Provides a typed MastraClient configured to attach the current Supabase
+ * session's Bearer token to every request. The token is fetched per request
+ * via a custom `fetch`, so it stays fresh even after Supabase rotates it.
  */
 export function useMastra() {
   const config = useRuntimeConfig()
   const supabase = useSupabaseClient()
+  const user = useSupabaseUser()
 
   const baseUrl = config.public.mastraUrl as string
 
-  async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const { data: { session } } = await supabase.auth.getSession()
-    const token = session?.access_token
+  const client = new MastraClient({
+    baseUrl,
+    fetch: async (input, init) => {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
 
-    const res = await fetch(`${baseUrl}${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...options.headers,
+      return fetch(input, {
+        ...init,
+        headers: {
+          ...init?.headers,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      })
+    },
+  })
+
+  /**
+   * Builds a DefaultChatTransport for an agent's AI SDK chatRoute. On every
+   * send it attaches a fresh Supabase Bearer token and forwards only the
+   * latest message plus the user's memory thread/resource, so Mastra loads
+   * conversation history from storage instead of trusting client history.
+   */
+  function createChatTransport(agentPath = '/chat') {
+    return new DefaultChatTransport({
+      api: `${baseUrl}${agentPath}`,
+      prepareSendMessagesRequest: async ({ messages }) => {
+        const { data: { session } } = await supabase.auth.getSession()
+        const token = session?.access_token
+        const userId = session?.user?.id ?? user.value?.id
+
+        const headers: Record<string, string> = {}
+        if (token) headers.Authorization = `Bearer ${token}`
+
+        return {
+          headers,
+          body: {
+            messages: messages.slice(-1),
+            memory: {
+              thread: `github-${userId}`,
+              resource: userId,
+            },
+          },
+        }
       },
     })
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => res.statusText)
-      throw new Error(`Mastra API ${res.status}: ${body}`)
-    }
-
-    return res.json() as Promise<T>
   }
 
-  /** List all registered agents */
-  function agents() {
-    return apiFetch<Record<string, unknown>>('/api/agents')
-  }
-
-  /** Generate a response from a named agent */
-  function generate(agentId: string, messages: { role: string; content: string }[]) {
-    return apiFetch<{ text: string }>(`/api/agents/${agentId}/generate`, {
-      method: 'POST',
-      body: JSON.stringify({ messages }),
-    })
-  }
-
-  return { apiFetch, agents, generate }
+  return { client, createChatTransport }
 }
