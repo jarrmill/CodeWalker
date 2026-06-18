@@ -21,9 +21,14 @@ async function signOut() {
 
     <main class="max-w-4xl mx-auto px-6 py-10">
       <h2 class="text-2xl font-semibold mb-6">Agents</h2>
-      <p class="text-sm text-gray-500 dark:text-gray-400">
-        Connected to Mastra API. Add your pages here.
-      </p>
+      <div class="grid gap-4 sm:grid-cols-2">
+        <UButton to="/github" size="lg" variant="soft" block>
+          GitHub Agent
+        </UButton>
+        <UButton to="/code-review" size="lg" variant="soft" block>
+          Code Review Orientation
+        </UButton>
+      </div>
     </main>
   </div>
 </template>

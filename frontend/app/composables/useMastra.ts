@@ -34,8 +34,9 @@ export function useMastra() {
    * send it attaches a fresh Supabase Bearer token and forwards only the
    * latest message plus the user's memory thread/resource, so Mastra loads
    * conversation history from storage instead of trusting client history.
+   * The threadPrefix keeps each page's conversation in its own memory thread.
    */
-  function createChatTransport(agentPath = '/chat') {
+  function createChatTransport(agentPath = '/chat', threadPrefix = 'github') {
     return new DefaultChatTransport({
       api: `${baseUrl}${agentPath}`,
       prepareSendMessagesRequest: async ({ messages }) => {
@@ -51,7 +52,7 @@ export function useMastra() {
           body: {
             messages: messages.slice(-1),
             memory: {
-              thread: `github-${userId}`,
+              thread: `${threadPrefix}-${userId}`,
               resource: userId,
             },
           },

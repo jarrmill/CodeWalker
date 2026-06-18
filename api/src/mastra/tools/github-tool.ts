@@ -74,6 +74,38 @@ export const githubOpenPullRequestsTool = createTool({
   },
 });
 
+const MAX_DIFF_CHARS = 60000;
+
+const pullRequestDetailSchema = z.object({
+  number: z.number(),
+  title: z.string(),
+  description: z.string(),
+  state: z.string(),
+  draft: z.boolean(),
+  url: z.string(),
+  author: z.string().nullable(),
+  diff: z.string(),
+  diffTruncated: z.boolean(),
+});
+
+export const githubGetPullRequestTool = createTool({
+  id: 'get-github-pull-request',
+  description:
+    'Fetch a single GitHub pull request including its title, description, and unified diff so it can be reviewed and discussed. Defaults to the CodeWalker repository.',
+  inputSchema: z.object({
+    owner: z
+      .string()
+      .default(DEFAULT_OWNER)
+      .describe('The GitHub repository owner / organization.'),
+    repo: z.string().default(DEFAULT_REPO).describe('The GitHub repository name.'),
+    pullNumber: z.number().describe('The pull request number to fetch.'),
+  }),
+  outputSchema: pullRequestDetailSchema,
+  execute: async ({ owner, repo, pullNumber }) => {
+    return await getPullRequest({ owner, repo, pullNumber });
+  },
+});
+
 const getOpenPullRequests = async ({ owner, repo }: { owner: string; repo: string }) => {
   const headers = getGitHubHeaders();
 
@@ -123,5 +155,56 @@ const getOpenPullRequests = async ({ owner, repo }: { owner: string; repo: strin
       createdAt: pr.created_at,
       updatedAt: pr.updated_at,
     })),
+  };
+};
+
+const getPullRequest = async ({
+  owner,
+  repo,
+  pullNumber,
+}: {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+}) => {
+  const headers = getGitHubHeaders();
+  const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/pulls/${pullNumber}`;
+
+  const metaResponse = await fetch(url, { headers });
+  if (metaResponse.status === 404) {
+    throw new Error(`Pull request #${pullNumber} was not found in ${owner}/${repo}.`);
+  }
+  if (!metaResponse.ok) {
+    throw new Error(
+      `Failed to fetch pull request #${pullNumber}: ${metaResponse.status} ${metaResponse.statusText}`,
+    );
+  }
+  const pr = (await metaResponse.json()) as PullRequest;
+
+  const diffResponse = await fetch(url, {
+    headers: { ...headers, Accept: 'application/vnd.github.diff' },
+  });
+  if (!diffResponse.ok) {
+    throw new Error(
+      `Failed to fetch diff for pull request #${pullNumber}: ${diffResponse.status} ${diffResponse.statusText}`,
+    );
+  }
+
+  let diff = await diffResponse.text();
+  const diffTruncated = diff.length > MAX_DIFF_CHARS;
+  if (diffTruncated) {
+    diff = `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated at ${MAX_DIFF_CHARS} characters]`;
+  }
+
+  return {
+    number: pr.number,
+    title: pr.title,
+    description: pr.body ?? '',
+    state: pr.state,
+    draft: pr.draft,
+    url: pr.html_url,
+    author: pr.user?.login ?? null,
+    diff,
+    diffTruncated,
   };
 };
