@@ -7,17 +7,37 @@ import { VercelDeployer } from '@mastra/deployer-vercel';
 import { Observability, MastraStorageExporter, MastraPlatformExporter, SensitiveDataFilter } from '@mastra/observability';
 import { chatRoute } from '@mastra/ai-sdk';
 import { weatherWorkflow } from './workflows/weather-workflow';
+import { codeReviewOrientationWorkflow } from './workflows/code-review-orientation-workflow';
 import { weatherAgent } from './agents/weather-agent';
 import { shortcutAgent } from './agents/shortcut-agent';
 import { githubAgent } from './agents/github-agent';
+import {
+  selectTaskAgent,
+  understandContextAgent,
+  understandRationaleAgent,
+} from './agents/code-review-gates';
+import { codeReviewAgent } from './agents/code-review-agent';
 import { toolCallAppropriatenessScorer, completenessScorer, translationScorer } from './scorers/weather-scorer';
 import { shortcutMyTicketsTool, shortcutGetStoryTool } from './tools/shortcut-tool';
-import { githubOpenPullRequestsTool } from './tools/github-tool';
+import { githubOpenPullRequestsTool, githubGetPullRequestTool } from './tools/github-tool';
 
 export const mastra = new Mastra({
-  workflows: { weatherWorkflow },
-  agents: { weatherAgent, shortcutAgent, githubAgent },
-  tools: { shortcutMyTicketsTool, shortcutGetStoryTool, githubOpenPullRequestsTool },
+  workflows: { weatherWorkflow, codeReviewOrientationWorkflow },
+  agents: {
+    weatherAgent,
+    shortcutAgent,
+    githubAgent,
+    selectTaskAgent,
+    understandContextAgent,
+    understandRationaleAgent,
+    codeReviewAgent,
+  },
+  tools: {
+    shortcutMyTicketsTool,
+    shortcutGetStoryTool,
+    githubOpenPullRequestsTool,
+    githubGetPullRequestTool,
+  },
   scorers: { toolCallAppropriatenessScorer, completenessScorer, translationScorer },
   storage: new PostgresStore({
     id: 'mastra-storage',
@@ -34,6 +54,7 @@ export const mastra = new Mastra({
     }),
     apiRoutes: [
       chatRoute({ path: '/chat', agent: 'githubAgent', version: 'v6' }),
+      chatRoute({ path: '/code-review-chat', agent: 'codeReviewAgent', version: 'v6' }),
     ],
   },
   logger: new PinoLogger({
