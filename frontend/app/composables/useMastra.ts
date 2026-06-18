@@ -61,5 +61,22 @@ export function useMastra() {
     })
   }
 
-  return { client, createChatTransport }
+  /**
+   * Drives the interactive code-review orientation workflow. The workflow
+   * suspends at each stage to collect the user's explanation, so this returns
+   * the run plus the initial result. Callers inspect `result.status` and call
+   * `run.resumeAsync(...)` with the user's feedback to advance.
+   */
+  async function startOrientation(inputData: { diff: string; prDescription: string }) {
+    const run = await client.getWorkflow('codeReviewOrientationWorkflow').createRun()
+    const result = await run.startAsync({ inputData })
+    return { run, result }
+  }
+
+  /** Fetches a pull request (title, description, unified diff) from GitHub. */
+  async function fetchPullRequest(pullNumber: number) {
+    return client.getTool('githubGetPullRequestTool').execute({ data: { pullNumber } })
+  }
+
+  return { client, createChatTransport, startOrientation, fetchPullRequest }
 }

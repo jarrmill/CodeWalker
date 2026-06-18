@@ -20,7 +20,6 @@ import { codeReviewAgent } from './agents/code-review-agent';
 import { toolCallAppropriatenessScorer, completenessScorer, translationScorer } from './scorers/weather-scorer';
 import { shortcutMyTicketsTool, shortcutGetStoryTool } from './tools/shortcut-tool';
 import { githubOpenPullRequestsTool, githubGetPullRequestTool } from './tools/github-tool';
-import { runCodeReviewOrientationTool } from './tools/code-review-tool';
 
 export const mastra = new Mastra({
   workflows: { weatherWorkflow, codeReviewOrientationWorkflow },
@@ -38,7 +37,6 @@ export const mastra = new Mastra({
     shortcutGetStoryTool,
     githubOpenPullRequestsTool,
     githubGetPullRequestTool,
-    runCodeReviewOrientationTool,
   },
   scorers: { toolCallAppropriatenessScorer, completenessScorer, translationScorer },
   storage: new PostgresStore({

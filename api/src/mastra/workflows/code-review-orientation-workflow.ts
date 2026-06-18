@@ -1,22 +1,22 @@
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { z } from 'zod';
 
-export const gateDecisionSchema = z.object({
-  criteriaMet: z
+export const gateGradeSchema = z.object({
+  understood: z
     .boolean()
-    .describe('Whether enough is known to consider this stage satisfied and advance.'),
-  confidence: z
-    .number()
-    .min(0)
-    .max(1)
-    .describe('Confidence (0-1) in the criteriaMet judgment.'),
-  missingInfo: z
+    .describe("Whether the user's explanation shows sufficient understanding for this stage."),
+  score: z.number().min(0).max(1).describe('How well the user understood this stage (0-1).'),
+  feedback: z
+    .string()
+    .describe(
+      'Coaching shown to the user. If not understood, what to reconsider; if understood, a brief confirmation.',
+    ),
+  missingPoints: z
     .array(z.string())
-    .describe('Specific pieces of information still needed to fully satisfy this stage.'),
+    .describe('Specific things the user missed or got wrong in their explanation.'),
   notes: z
     .array(z.string())
-    .describe('Facts learned during this stage, contributing to the overall review story.'),
-  reasoning: z.string().describe('Short explanation for the criteriaMet judgment.'),
+    .describe('Confirmed facts about the change, contributing to the overall review story.'),
 });
 
 export const orientationInputSchema = z.object({
@@ -27,91 +27,159 @@ export const orientationInputSchema = z.object({
     .describe('PR description, commit message, or any context about the change.'),
 });
 
+const stageResultSchema = gateGradeSchema.extend({
+  explanation: z.string().describe("The user's explanation that was accepted for this stage."),
+  attempts: z.number().describe('How many attempts the user needed to pass this stage.'),
+});
+
 export const orientationStateSchema = z.object({
   diff: z.string(),
   prDescription: z.string(),
   notes: z.array(z.string()),
   stages: z.object({
-    selectTask: gateDecisionSchema.optional(),
-    understandContext: gateDecisionSchema.optional(),
-    understandRationale: gateDecisionSchema.optional(),
+    selectTask: stageResultSchema.optional(),
+    understandContext: stageResultSchema.optional(),
+    understandRationale: stageResultSchema.optional(),
   }),
   readyForAnalysis: z.boolean(),
 });
 
 type OrientationState = z.infer<typeof orientationStateSchema>;
 
-function buildPrompt(state: { diff: string; prDescription: string; notes: string[] }): string {
-  const known = state.notes.length ? `\n\nKnown so far:\n${state.notes.join('\n')}` : '';
-  return `PR description:\n${state.prDescription || '(none provided)'}${known}\n\nDiff:\n${state.diff}`;
-}
+// Payload handed to the UI while a stage is paused for input.
+const gateSuspendSchema = z.object({
+  stage: z.string(),
+  question: z.string(),
+  attempt: z.number(),
+  previousFeedback: z.string().optional(),
+  missingPoints: z.array(z.string()).optional(),
+});
 
-const selectTaskStep = createStep({
-  id: 'select-task',
-  description: 'Decide whether enough is known to start reviewing this change.',
+// What the UI sends back when resuming a paused stage.
+const gateResumeSchema = z.object({
+  explanation: z.string().describe("The user's explanation of this stage."),
+  giveUp: z
+    .boolean()
+    .default(false)
+    .describe('Set true to stop trying this stage and advance with the latest grade.'),
+});
+
+const initStep = createStep({
+  id: 'init',
   inputSchema: orientationInputSchema,
   outputSchema: orientationStateSchema,
-  execute: async ({ inputData, mastra }) => {
-    const agent = mastra!.getAgent('selectTaskAgent');
-    const { object } = await agent.generate(buildPrompt({ ...inputData, notes: [] }), {
-      structuredOutput: { schema: gateDecisionSchema },
-    });
-
-    return {
+  execute: async ({ inputData }) =>
+    ({
       diff: inputData.diff,
       prDescription: inputData.prDescription,
-      notes: object.notes,
-      stages: { selectTask: object },
+      notes: [],
+      stages: {},
       readyForAnalysis: false,
-    } satisfies OrientationState;
-  },
+    }) satisfies OrientationState,
 });
 
-const understandContextStep = createStep({
+function buildGradePrompt(state: OrientationState, question: string, explanation: string): string {
+  const known = state.notes.length ? `\n\nEstablished so far:\n${state.notes.join('\n')}` : '';
+  return `Stage question the user was answering:\n${question}${known}
+
+PR description:
+${state.prDescription || '(none provided)'}
+
+Diff:
+${state.diff}
+
+The user's explanation to grade:
+${explanation || '(the user left this blank)'}
+
+Grade ONLY whether the user's explanation demonstrates understanding for this stage. Do not grade the change itself.`;
+}
+
+function createOrientationGate(opts: {
+  id: string;
+  agentName: string;
+  stageKey: keyof OrientationState['stages'];
+  question: string;
+  isFinal?: boolean;
+}) {
+  return createStep({
+    id: opts.id,
+    inputSchema: orientationStateSchema,
+    outputSchema: orientationStateSchema,
+    resumeSchema: gateResumeSchema,
+    suspendSchema: gateSuspendSchema,
+    execute: async ({ inputData, resumeData, suspend, suspendData, mastra }) => {
+      const attempt = (suspendData?.attempt ?? 0) + 1;
+
+      // First entry into the stage: pause and ask the user to explain it.
+      if (!resumeData) {
+        return await suspend({ stage: opts.id, question: opts.question, attempt });
+      }
+
+      const { explanation, giveUp } = resumeData;
+
+      const agent = mastra!.getAgent(opts.agentName);
+      const { object: grade } = await agent.generate(
+        buildGradePrompt(inputData, opts.question, explanation),
+        { structuredOutput: { schema: gateGradeSchema } },
+      );
+
+      // Not there yet and the user wants another go: pause again with coaching.
+      if (!grade.understood && !giveUp) {
+        return await suspend({
+          stage: opts.id,
+          question: opts.question,
+          attempt: attempt + 1,
+          previousFeedback: grade.feedback,
+          missingPoints: grade.missingPoints,
+        });
+      }
+
+      const stages = {
+        ...inputData.stages,
+        [opts.stageKey]: { ...grade, explanation, attempts: attempt },
+      };
+
+      const readyForAnalysis = opts.isFinal
+        ? Boolean(
+            stages.selectTask?.understood &&
+              stages.understandContext?.understood &&
+              stages.understandRationale?.understood,
+          )
+        : false;
+
+      return {
+        ...inputData,
+        notes: [...inputData.notes, ...grade.notes],
+        stages,
+        readyForAnalysis,
+      } satisfies OrientationState;
+    },
+  });
+}
+
+const selectTaskStep = createOrientationGate({
+  id: 'select-task',
+  agentName: 'selectTaskAgent',
+  stageKey: 'selectTask',
+  question:
+    'In your own words, what is this change and is its scope clear enough to start reviewing? Which files or components does it touch?',
+});
+
+const understandContextStep = createOrientationGate({
   id: 'understand-context',
-  description: 'Decide whether the context of the change is understood.',
-  inputSchema: orientationStateSchema,
-  outputSchema: orientationStateSchema,
-  execute: async ({ inputData, mastra }) => {
-    const agent = mastra!.getAgent('understandContextAgent');
-    const { object } = await agent.generate(buildPrompt(inputData), {
-      structuredOutput: { schema: gateDecisionSchema },
-    });
-
-    return {
-      ...inputData,
-      notes: [...inputData.notes, ...object.notes],
-      stages: { ...inputData.stages, understandContext: object },
-      readyForAnalysis: false,
-    } satisfies OrientationState;
-  },
+  agentName: 'understandContextAgent',
+  stageKey: 'understandContext',
+  question:
+    'Explain the context of this change: who authored it and in what repository, the language(s) involved, and what type of change it is (feature, fix, refactor, docs, chore, ...).',
 });
 
-const understandRationaleStep = createStep({
+const understandRationaleStep = createOrientationGate({
   id: 'understand-rationale',
-  description: 'Decide whether the rationale (the why) of the change is understood.',
-  inputSchema: orientationStateSchema,
-  outputSchema: orientationStateSchema,
-  execute: async ({ inputData, mastra }) => {
-    const agent = mastra!.getAgent('understandRationaleAgent');
-    const { object } = await agent.generate(buildPrompt(inputData), {
-      structuredOutput: { schema: gateDecisionSchema },
-    });
-
-    const stages = { ...inputData.stages, understandRationale: object };
-    const readyForAnalysis = Boolean(
-      stages.selectTask?.criteriaMet &&
-        stages.understandContext?.criteriaMet &&
-        stages.understandRationale?.criteriaMet,
-    );
-
-    return {
-      ...inputData,
-      notes: [...inputData.notes, ...object.notes],
-      stages,
-      readyForAnalysis,
-    } satisfies OrientationState;
-  },
+  agentName: 'understandRationaleAgent',
+  stageKey: 'understandRationale',
+  question:
+    'Explain the rationale of this change: what is it trying to do, and why is it being made?',
+  isFinal: true,
 });
 
 export const codeReviewOrientationWorkflow = createWorkflow({
@@ -119,6 +187,7 @@ export const codeReviewOrientationWorkflow = createWorkflow({
   inputSchema: orientationInputSchema,
   outputSchema: orientationStateSchema,
 })
+  .then(initStep)
   .then(selectTaskStep)
   .then(understandContextStep)
   .then(understandRationaleStep);
