@@ -71,8 +71,13 @@ async function loadPr() {
 
 function applyResult(result: any) {
   if (result.status === 'suspended') {
-    suspendPayload.value = result.suspendPayload
-    suspendedStep.value = result.suspended?.[0] ?? null
+    const step = result.suspended?.[0] ?? null
+    suspendedStep.value = step
+    // The server keys suspendPayload by the suspended step's id, so unwrap to
+    // the inner payload (stage, question, feedback, ...) the UI renders.
+    const stepId = Array.isArray(step) ? step[0] : step
+    suspendPayload.value =
+      (stepId && result.suspendPayload?.[stepId]) ?? result.suspendPayload
     explanation.value = ''
     phase.value = 'running'
   } else if (result.status === 'success') {

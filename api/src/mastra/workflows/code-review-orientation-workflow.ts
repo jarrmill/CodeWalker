@@ -109,7 +109,7 @@ function createOrientationGate(opts: {
     outputSchema: orientationStateSchema,
     resumeSchema: gateResumeSchema,
     suspendSchema: gateSuspendSchema,
-    execute: async ({ inputData, resumeData, suspend, suspendData, mastra }) => {
+    execute: async ({ inputData, resumeData, suspend, suspendData, mastra, runId }) => {
       const attempt = (suspendData?.attempt ?? 0) + 1;
 
       // First entry into the stage: pause and ask the user to explain it.
@@ -118,12 +118,32 @@ function createOrientationGate(opts: {
       }
 
       const { explanation, giveUp } = resumeData;
+      const logger = mastra!.getLogger();
+
+      // PII-safe: log the size of the explanation, never its contents.
+      logger.info('[orientation] explanation submitted for grading', {
+        runId,
+        stage: opts.id,
+        attempt,
+        giveUp,
+        explanationChars: explanation.length,
+      });
 
       const agent = mastra!.getAgent(opts.agentName);
       const { object: grade } = await agent.generate(
         buildGradePrompt(inputData, opts.question, explanation),
         { structuredOutput: { schema: gateGradeSchema } },
       );
+
+      // PII-safe: log the verdict and how many points were missed, not their text.
+      logger.info('[orientation] grade received', {
+        runId,
+        stage: opts.id,
+        attempt,
+        understood: grade.understood,
+        score: grade.score,
+        missingPointsCount: grade.missingPoints.length,
+      });
 
       // Not there yet and the user wants another go: pause again with coaching.
       if (!grade.understood && !giveUp) {
