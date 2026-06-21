@@ -52,6 +52,8 @@ const gateSuspendSchema = z.object({
   question: z.string(),
   attempt: z.number(),
   previousFeedback: z.string().optional(),
+  previousScore: z.number().optional(),
+  scoreHistory: z.array(z.number()).optional(),
   missingPoints: z.array(z.string()).optional(),
 });
 
@@ -125,11 +127,14 @@ function createOrientationGate(opts: {
 
       // Not there yet and the user wants another go: pause again with coaching.
       if (!grade.understood && !giveUp) {
+        const scoreHistory = [...(suspendData?.scoreHistory ?? []), grade.score];
         return await suspend({
           stage: opts.id,
           question: opts.question,
           attempt: attempt + 1,
           previousFeedback: grade.feedback,
+          previousScore: grade.score,
+          scoreHistory,
           missingPoints: grade.missingPoints,
         });
       }

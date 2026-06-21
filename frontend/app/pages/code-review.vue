@@ -20,6 +20,15 @@ const DONE_STAGES: { key: StageKey; label: string }[] = [
 
 const phase = ref<'setup' | 'running' | 'done'>('setup')
 const loading = ref(false)
+// True only while an explanation is being graded by the agent, so we can show a
+// distinct "grading" state instead of a frozen card.
+const grading = ref(false)
+
+const TOTAL_STAGES = STAGE_ORDER.length
+
+function pct(score: number | undefined | null) {
+  return Math.round((score ?? 0) * 100)
+}
 
 // Setup inputs
 const pullNumber = ref('')
@@ -105,6 +114,8 @@ async function submit(giveUp = false) {
     return
   }
   loading.value = true
+  // Skipping advances with the latest grade; only a real submission is "grading".
+  grading.value = !giveUp
   try {
     const result = await run.value.resumeAsync({
       step: suspendedStep.value,
@@ -115,6 +126,7 @@ async function submit(giveUp = false) {
     toast.add({ title: 'Could not submit', description: e?.message, color: 'error' })
   } finally {
     loading.value = false
+    grading.value = false
   }
 }
 
@@ -147,30 +159,39 @@ async function signOut() {
 
     <UContainer class="flex-1 w-full max-w-3xl py-6 flex flex-col gap-6">
       <!-- Stage indicator (running / done) -->
-      <ol v-if="phase !== 'setup'" class="flex items-center gap-2 text-sm">
-        <li
-          v-for="(id, i) in STAGE_ORDER"
-          :key="id"
-          class="flex items-center gap-2"
-        >
-          <span
-            class="flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium"
-            :class="
-              phase === 'done' || i < currentStageIndex
-                ? 'bg-primary-500 text-white'
-                : i === currentStageIndex
-                  ? 'bg-primary-100 text-primary-700 ring-2 ring-primary-500 dark:bg-primary-900 dark:text-primary-200'
-                  : 'bg-gray-200 text-gray-500 dark:bg-gray-800'
-            "
+      <div v-if="phase !== 'setup'" class="flex flex-col gap-2">
+        <p class="text-xs font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+          <template v-if="phase === 'done'">All stages complete</template>
+          <template v-else>
+            Stage {{ currentStageIndex + 1 }} of {{ TOTAL_STAGES }}
+            <span v-if="suspendPayload?.attempt > 1"> · Attempt {{ suspendPayload.attempt }}</span>
+          </template>
+        </p>
+        <ol class="flex items-center gap-2 text-sm">
+          <li
+            v-for="(id, i) in STAGE_ORDER"
+            :key="id"
+            class="flex items-center gap-2"
           >
-            {{ phase === 'done' || i < currentStageIndex ? '✓' : i + 1 }}
-          </span>
-          <span :class="i === currentStageIndex && phase === 'running' ? 'font-medium' : 'text-gray-500'">
-            {{ STAGE_LABELS[id] }}
-          </span>
-          <span v-if="i < STAGE_ORDER.length - 1" class="text-gray-300 dark:text-gray-700">→</span>
-        </li>
-      </ol>
+            <span
+              class="flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium"
+              :class="
+                phase === 'done' || i < currentStageIndex
+                  ? 'bg-primary-500 text-white'
+                  : i === currentStageIndex
+                    ? 'bg-primary-100 text-primary-700 ring-2 ring-primary-500 dark:bg-primary-900 dark:text-primary-200'
+                    : 'bg-gray-200 text-gray-500 dark:bg-gray-800'
+              "
+            >
+              {{ phase === 'done' || i < currentStageIndex ? '✓' : i + 1 }}
+            </span>
+            <span :class="i === currentStageIndex && phase === 'running' ? 'font-medium' : 'text-gray-500'">
+              {{ STAGE_LABELS[id] }}
+            </span>
+            <span v-if="i < STAGE_ORDER.length - 1" class="text-gray-300 dark:text-gray-700">→</span>
+          </li>
+        </ol>
+      </div>
 
       <!-- Setup -->
       <UCard v-if="phase === 'setup'">
@@ -179,6 +200,13 @@ async function signOut() {
         </template>
 
         <div class="flex flex-col gap-4">
+          <UAlert
+            color="info"
+            variant="subtle"
+            title="How orientation works"
+            description="You'll explain the change across three gated stages: select the task, understand the context, then the rationale. Each explanation is graded — you can retry a stage as many times as you need. Pass all three to unlock deeper analysis."
+          />
+
           <div class="flex items-end gap-2">
             <UFormField label="Pull request number" class="flex-1">
               <UInput v-model="pullNumber" type="number" placeholder="e.g. 5" />
@@ -214,23 +242,57 @@ async function signOut() {
       <UCard v-else-if="phase === 'running' && suspendPayload">
         <template #header>
           <div class="flex items-center justify-between">
-            <h2 class="font-medium">{{ STAGE_LABELS[suspendPayload.stage] }}</h2>
-            <UBadge v-if="suspendPayload.attempt > 1" color="warning" variant="subtle">
-              Attempt {{ suspendPayload.attempt }}
-            </UBadge>
+            <div>
+              <p class="text-xs text-gray-400 dark:text-gray-500">
+                Stage {{ currentStageIndex + 1 }} of {{ TOTAL_STAGES }}
+              </p>
+              <h2 class="font-medium">{{ STAGE_LABELS[suspendPayload.stage] }}</h2>
+            </div>
+            <div class="flex items-center gap-2">
+              <UBadge v-if="suspendPayload.previousScore != null" color="neutral" variant="subtle">
+                Last score {{ pct(suspendPayload.previousScore) }}%
+              </UBadge>
+              <UBadge v-if="suspendPayload.attempt > 1" color="warning" variant="subtle">
+                Attempt {{ suspendPayload.attempt }}
+              </UBadge>
+            </div>
           </div>
         </template>
 
-        <div class="flex flex-col gap-4">
+        <!-- Grading in progress: distinct state so the card never looks frozen -->
+        <div v-if="grading" class="flex flex-col items-center justify-center gap-3 py-10 text-center">
+          <UIcon name="i-lucide-loader-circle" class="size-8 animate-spin text-primary-500" />
+          <p class="font-medium">Grading your explanation…</p>
+          <p class="text-sm text-gray-500 dark:text-gray-400">
+            Checking your understanding of "{{ STAGE_LABELS[suspendPayload.stage] }}".
+          </p>
+        </div>
+
+        <div v-else class="flex flex-col gap-4">
           <p class="text-gray-700 dark:text-gray-300">{{ suspendPayload.question }}</p>
 
           <UAlert
             v-if="suspendPayload.previousFeedback"
             color="warning"
             variant="subtle"
-            title="Not quite — try again"
+            :title="`Not quite — try again${suspendPayload.previousScore != null ? ` (scored ${pct(suspendPayload.previousScore)}%)` : ''}`"
             :description="suspendPayload.previousFeedback"
           />
+
+          <div
+            v-if="suspendPayload.scoreHistory?.length"
+            class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400"
+          >
+            <span class="font-medium">Your scores:</span>
+            <span
+              v-for="(s, i) in suspendPayload.scoreHistory"
+              :key="i"
+              class="flex items-center gap-2"
+            >
+              <span class="font-mono">{{ pct(s) }}%</span>
+              <span v-if="i < suspendPayload.scoreHistory.length - 1" class="text-gray-300 dark:text-gray-700">→</span>
+            </span>
+          </div>
 
           <div v-if="suspendPayload.missingPoints?.length" class="text-sm">
             <p class="font-medium text-gray-600 dark:text-gray-400 mb-1">You missed:</p>
@@ -247,6 +309,13 @@ async function signOut() {
               class="w-full"
             />
           </UFormField>
+
+          <UAlert
+            color="neutral"
+            variant="subtle"
+            icon="i-lucide-info"
+            description="Skipping records your latest grade for this stage. If it hasn't passed, the final readiness verdict will reflect that."
+          />
 
           <div class="flex justify-between">
             <UButton variant="ghost" color="neutral" :loading="loading" @click="submit(true)">
