@@ -78,5 +78,10 @@ export function useMastra() {
     return client.getTool('githubGetPullRequestTool').execute({ data: { pullNumber } })
   }
 
-  return { client, createChatTransport, startOrientation, fetchPullRequest }
+  /** Fetches the repository's open pull requests (summaries, no diffs). */
+  async function fetchOpenPullRequests() {
+    return client.getTool('githubOpenPullRequestsTool').execute({ data: {} })
+  }
+
+  return { client, createChatTransport, startOrientation, fetchPullRequest, fetchOpenPullRequests }
 }
