@@ -1,52 +1,38 @@
 <script setup lang="ts">
-import type {
-  FinalResult,
-  OrientationPhase,
-  PullRequestSummary,
-  SuspendPayload,
-} from '~/utils/orientation'
+import { Chat } from '@ai-sdk/vue'
+import { getToolName, isTextUIPart, isToolUIPart } from 'ai'
+import { isToolStreaming } from '@nuxt/ui/utils/ai'
+import type { PullRequestSummary } from '~/utils/github'
 
 const user = useSupabaseUser()
 const supabase = useSupabaseClient()
-const { startOrientation, fetchPullRequest, fetchOpenPullRequests } = useMastra()
+const { createChatTransport, fetchOpenPullRequests } = useMastra()
 const toast = useToast()
 
-const phase = ref<OrientationPhase>('setup')
-const loading = ref(false)
-// True only while an explanation is being graded by the agent, so we can show a
-// distinct "grading" state instead of a frozen card.
-const grading = ref(false)
+const input = ref('')
 
-// Setup: the open-PR list and the user's selection
+// The open-PR list, fetched directly on load so the user can pick a PR without
+// first asking the agent "what's available" — saving an LLM round-trip.
 const pullRequests = ref<PullRequestSummary[]>([])
 const prsLoading = ref(false)
-const selectedPrNumber = ref<number>()
 
-// The selected PR's loaded diff/description
-const diff = ref('')
-const prDescription = ref('')
-const diffTruncated = ref(false)
+// The 'code-review' thread prefix keeps this conversation in its own memory
+// thread (code-review-<userId>), separate from the github page's thread.
+const chat = new Chat({
+  transport: createChatTransport('/code-review-chat', 'code-review'),
+  onError(error) {
+    toast.add({ title: 'Chat error', description: error.message, color: 'error' })
+  },
+})
 
-// Running state (the suspended workflow)
-const run = shallowRef<any>(null)
-const suspendPayload = ref<SuspendPayload | null>(null)
-const suspendedStep = ref<string[] | null>(null)
-const explanation = ref('')
-
-// Final state
-const finalResult = ref<FinalResult | null>(null)
-
-const currentStageIndex = computed(() =>
-  suspendPayload.value ? STAGE_ORDER.indexOf(suspendPayload.value.stage as any) : -1,
-)
+// Show the on-load picker only until the conversation has started.
+const showPicker = computed(() => chat.messages.length === 0)
 
 async function loadOpenPrs() {
   prsLoading.value = true
   try {
     const { pullRequests: prs } = await fetchOpenPullRequests()
-    pullRequests.value = (prs ?? [])
-      .filter((pr: PullRequestSummary) => !pr.draft)
-      .sort((a: PullRequestSummary, b: PullRequestSummary) => b.number - a.number)
+    pullRequests.value = prs ?? []
   } catch (e: any) {
     toast.add({ title: 'Failed to load open PRs', description: e?.message, color: 'error' })
   } finally {
@@ -54,110 +40,28 @@ async function loadOpenPrs() {
   }
 }
 
-async function loadPr(n: number) {
-  // The diff/description are cleared while loading so a stale diff can never be
-  // submitted for a different PR, and Start stays disabled until the load lands.
-  diff.value = ''
-  prDescription.value = ''
-  diffTruncated.value = false
-  loading.value = true
-  try {
-    const pr = await fetchPullRequest(n)
-    diff.value = pr.diff ?? ''
-    prDescription.value = [pr.title, pr.description].filter(Boolean).join('\n\n')
-    diffTruncated.value = Boolean(pr.diffTruncated)
-  } catch (e: any) {
-    toast.add({ title: 'Failed to load PR', description: e?.message, color: 'error' })
-  } finally {
-    loading.value = false
-  }
-}
-
-// Loading a PR's diff is driven purely by the selection.
-watch(selectedPrNumber, (n) => {
-  if (n) loadPr(n)
-})
-
 onMounted(loadOpenPrs)
 
-function applyResult(result: any) {
-  if (result.status === 'suspended') {
-    const step = result.suspended?.[0] ?? null
-    suspendedStep.value = step
-    // The server keys suspendPayload by the suspended step's id, so unwrap to
-    // the inner payload (stage, question, feedback, ...) the UI renders.
-    const stepId = Array.isArray(step) ? step[0] : step
-    suspendPayload.value =
-      (stepId && result.suspendPayload?.[stepId]) ?? result.suspendPayload
-    explanation.value = ''
-    phase.value = 'running'
-  } else if (result.status === 'success') {
-    finalResult.value = result.result
-    phase.value = 'done'
-  } else {
-    toast.add({
-      title: `Workflow ${result.status}`,
-      description: result.error?.message,
-      color: 'error',
-    })
-  }
+// Picking a PR (from the picker or an in-chat list) seeds the conversation so
+// the agent starts already knowing the target change.
+function selectPr(pullNumber: number) {
+  chat.sendMessage({ text: `Let's orient on PR #${pullNumber}.` })
 }
 
-async function start() {
-  if (!diff.value.trim()) {
-    toast.add({ title: 'Provide a diff first', color: 'error' })
-    return
+// A tool part carries the open-PR list only once its output is available.
+function prsFromPart(part: unknown): PullRequestSummary[] | null {
+  if (isToolUIPart(part as any) && (part as any).state === 'output-available') {
+    const output = (part as any).output as { pullRequests?: PullRequestSummary[] } | undefined
+    if (Array.isArray(output?.pullRequests)) return output!.pullRequests
   }
-  loading.value = true
-  try {
-    const { run: r, result } = await startOrientation({
-      diff: diff.value,
-      prDescription: prDescription.value,
-    })
-    run.value = r
-    applyResult(result)
-  } catch (e: any) {
-    toast.add({ title: 'Could not start orientation', description: e?.message, color: 'error' })
-  } finally {
-    loading.value = false
-  }
+  return null
 }
 
-async function submit(giveUp = false) {
-  if (!run.value || !suspendedStep.value) return
-  if (!giveUp && !explanation.value.trim()) {
-    toast.add({ title: 'Write your explanation first', color: 'error' })
-    return
-  }
-  loading.value = true
-  // Skipping advances with the latest grade; only a real submission is "grading".
-  grading.value = !giveUp
-  try {
-    const result = await run.value.resumeAsync({
-      step: suspendedStep.value,
-      resumeData: { explanation: explanation.value, giveUp },
-    })
-    applyResult(result)
-  } catch (e: any) {
-    toast.add({ title: 'Could not submit', description: e?.message, color: 'error' })
-  } finally {
-    loading.value = false
-    grading.value = false
-  }
-}
-
-function reset() {
-  phase.value = 'setup'
-  run.value = null
-  suspendPayload.value = null
-  suspendedStep.value = null
-  explanation.value = ''
-  finalResult.value = null
-  // Keep the fetched PR list, but clear the previous selection and its diff.
-  selectedPrNumber.value = undefined
-  diff.value = ''
-  prDescription.value = ''
-  diffTruncated.value = false
+function onSubmit() {
+  const text = input.value.trim()
+  if (!text) return
+  chat.sendMessage({ text })
+  input.value = ''
 }
 
 async function signOut() {
@@ -167,10 +71,8 @@ async function signOut() {
 </script>
 
 <template>
-  <div class="flex flex-col min-h-screen bg-gray-50 dark:bg-gray-950">
-    <header
-      class="border-b border-gray-200 dark:border-gray-800 px-6 py-4 flex items-center justify-between shrink-0"
-    >
+  <div class="flex flex-col h-screen bg-gray-50 dark:bg-gray-950">
+    <header class="border-b border-gray-200 dark:border-gray-800 px-6 py-4 flex items-center justify-between shrink-0">
       <h1 class="font-semibold text-lg">Code Review Orientation</h1>
       <div class="flex items-center gap-3">
         <span class="text-sm text-gray-500 dark:text-gray-400">{{ user?.email }}</span>
@@ -178,42 +80,60 @@ async function signOut() {
       </div>
     </header>
 
-    <UContainer class="flex-1 w-full max-w-3xl py-6 flex flex-col gap-6">
-      <OrientationStageIndicator
-        v-if="phase !== 'setup'"
-        :phase="phase"
-        :current-stage-index="currentStageIndex"
-        :attempt="suspendPayload?.attempt"
-      />
+    <UContainer class="flex-1 flex flex-col min-h-0 w-full max-w-3xl gap-3 py-4">
+      <!-- On load, offer the open PRs directly so the user can start without a round-trip. -->
+      <div v-if="showPicker" class="flex-1 min-h-0 overflow-y-auto flex flex-col gap-3">
+        <p class="text-sm text-gray-600 dark:text-gray-300">
+          Pick a pull request to orient on, or ask me anything below.
+        </p>
+        <PrList :prs="pullRequests" :loading="prsLoading" @select="selectPr" />
+      </div>
 
-      <OrientationSetup
-        v-if="phase === 'setup'"
-        v-model:selected="selectedPrNumber"
-        :pull-requests="pullRequests"
-        :prs-loading="prsLoading"
-        :loading="loading"
-        :diff-truncated="diffTruncated"
-        :has-diff="Boolean(diff.trim())"
-        :pr-description="prDescription"
-        @refresh="loadOpenPrs"
-        @start="start"
-      />
+      <UChatMessages
+        v-else
+        :messages="chat.messages"
+        :status="chat.status"
+        should-auto-scroll
+        class="flex-1 min-h-0 overflow-y-auto"
+      >
+        <template #content="{ message }">
+          <template v-for="(part, index) in message.parts">
+            <!-- Render an open-PR tool result as the same clickable list as the picker. -->
+            <PrList
+              v-if="prsFromPart(part)"
+              :key="`${message.id}-prs-${index}`"
+              :prs="prsFromPart(part)!"
+              @select="selectPr"
+            />
+            <UChatTool
+              v-else-if="isToolUIPart(part)"
+              :key="`${message.id}-tool-${index}`"
+              :text="getToolName(part)"
+              :streaming="isToolStreaming(part)"
+            />
+            <p
+              v-else-if="isTextUIPart(part)"
+              :key="`${message.id}-text-${index}`"
+              class="whitespace-pre-wrap"
+            >
+              {{ part.text }}
+            </p>
+          </template>
+        </template>
+      </UChatMessages>
 
-      <OrientationStageRunner
-        v-else-if="phase === 'running' && suspendPayload"
-        v-model:explanation="explanation"
-        :suspend-payload="suspendPayload"
-        :current-stage-index="currentStageIndex"
-        :loading="loading"
-        :grading="grading"
-        @submit="submit"
-      />
-
-      <OrientationResult
-        v-else-if="phase === 'done' && finalResult"
-        :final-result="finalResult"
-        @reset="reset"
-      />
+      <UChatPrompt
+        v-model="input"
+        :error="chat.error"
+        placeholder="Ask about open pull requests, or paste a diff to orient on..."
+        @submit="onSubmit"
+      >
+        <UChatPromptSubmit
+          :status="chat.status"
+          @stop="chat.stop()"
+          @reload="chat.regenerate()"
+        />
+      </UChatPrompt>
     </UContainer>
   </div>
 </template>

@@ -1,10 +1,11 @@
 import { MastraClient } from '@mastra/client-js'
 import { DefaultChatTransport } from 'ai'
+import type { OpenPullRequestsResult } from '~/utils/github'
 
 /**
- * Provides a typed MastraClient configured to attach the current Supabase
- * session's Bearer token to every request. The token is fetched per request
- * via a custom `fetch`, so it stays fresh even after Supabase rotates it.
+ * Provides helpers for talking to the Mastra server as the current Supabase
+ * user. Each request carries a fresh Supabase Bearer token, fetched per
+ * request so it stays valid even after Supabase rotates it.
  */
 export function useMastra() {
   const config = useRuntimeConfig()
@@ -62,26 +63,12 @@ export function useMastra() {
   }
 
   /**
-   * Drives the interactive code-review orientation workflow. The workflow
-   * suspends at each stage to collect the user's explanation, so this returns
-   * the run plus the initial result. Callers inspect `result.status` and call
-   * `run.resumeAsync(...)` with the user's feedback to advance.
+   * Fetches the repository's open pull requests (summaries, no diffs) directly,
+   * without an agent round-trip — used to show the PR picker on page load.
    */
-  async function startOrientation(inputData: { diff: string; prDescription: string }) {
-    const run = await client.getWorkflow('codeReviewOrientationWorkflow').createRun()
-    const result = await run.startAsync({ inputData })
-    return { run, result }
-  }
-
-  /** Fetches a pull request (title, description, unified diff) from GitHub. */
-  async function fetchPullRequest(pullNumber: number) {
-    return client.getTool('githubGetPullRequestTool').execute({ data: { pullNumber } })
-  }
-
-  /** Fetches the repository's open pull requests (summaries, no diffs). */
-  async function fetchOpenPullRequests() {
+  async function fetchOpenPullRequests(): Promise<OpenPullRequestsResult> {
     return client.getTool('githubOpenPullRequestsTool').execute({ data: {} })
   }
 
-  return { client, createChatTransport, startOrientation, fetchPullRequest, fetchOpenPullRequests }
+  return { client, createChatTransport, fetchOpenPullRequests }
 }

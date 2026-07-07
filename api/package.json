@@ -7,7 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "mastra dev",
     "build": "mastra build",
-    "start": "mastra start"
+    "start": "mastra start",
+    "eval:orientation": "tsx --env-file=.env src/mastra/scorers/orientation-grader.eval.ts"
   },
   "keywords": [],
   "author": "",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@types/node": "^25.9.2",
     "mastra": "^1.12.2",
+    "tsx": "^4.23.0",
     "typescript": "^6.0.3"
   }
 }
