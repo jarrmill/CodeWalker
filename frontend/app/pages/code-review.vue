@@ -2,13 +2,19 @@
 import { Chat } from '@ai-sdk/vue'
 import { getToolName, isTextUIPart, isToolUIPart } from 'ai'
 import { isToolStreaming } from '@nuxt/ui/utils/ai'
+import type { PullRequestSummary } from '~/utils/github'
 
 const user = useSupabaseUser()
 const supabase = useSupabaseClient()
-const { createChatTransport } = useMastra()
+const { createChatTransport, fetchOpenPullRequests } = useMastra()
 const toast = useToast()
 
 const input = ref('')
+
+// The open-PR list, fetched directly on load so the user can pick a PR without
+// first asking the agent "what's available" — saving an LLM round-trip.
+const pullRequests = ref<PullRequestSummary[]>([])
+const prsLoading = ref(false)
 
 // The 'code-review' thread prefix keeps this conversation in its own memory
 // thread (code-review-<userId>), separate from the github page's thread.
@@ -18,6 +24,38 @@ const chat = new Chat({
     toast.add({ title: 'Chat error', description: error.message, color: 'error' })
   },
 })
+
+// Show the on-load picker only until the conversation has started.
+const showPicker = computed(() => chat.messages.length === 0)
+
+async function loadOpenPrs() {
+  prsLoading.value = true
+  try {
+    const { pullRequests: prs } = await fetchOpenPullRequests()
+    pullRequests.value = prs ?? []
+  } catch (e: any) {
+    toast.add({ title: 'Failed to load open PRs', description: e?.message, color: 'error' })
+  } finally {
+    prsLoading.value = false
+  }
+}
+
+onMounted(loadOpenPrs)
+
+// Picking a PR (from the picker or an in-chat list) seeds the conversation so
+// the agent starts already knowing the target change.
+function selectPr(pullNumber: number) {
+  chat.sendMessage({ text: `Let's orient on PR #${pullNumber}.` })
+}
+
+// A tool part carries the open-PR list only once its output is available.
+function prsFromPart(part: unknown): PullRequestSummary[] | null {
+  if (isToolUIPart(part as any) && (part as any).state === 'output-available') {
+    const output = (part as any).output as { pullRequests?: PullRequestSummary[] } | undefined
+    if (Array.isArray(output?.pullRequests)) return output!.pullRequests
+  }
+  return null
+}
 
 function onSubmit() {
   const text = input.value.trim()
@@ -43,7 +81,16 @@ async function signOut() {
     </header>
 
     <UContainer class="flex-1 flex flex-col min-h-0 w-full max-w-3xl gap-3 py-4">
+      <!-- On load, offer the open PRs directly so the user can start without a round-trip. -->
+      <div v-if="showPicker" class="flex-1 min-h-0 overflow-y-auto flex flex-col gap-3">
+        <p class="text-sm text-gray-600 dark:text-gray-300">
+          Pick a pull request to orient on, or ask me anything below.
+        </p>
+        <PrList :prs="pullRequests" :loading="prsLoading" @select="selectPr" />
+      </div>
+
       <UChatMessages
+        v-else
         :messages="chat.messages"
         :status="chat.status"
         should-auto-scroll
@@ -51,8 +98,15 @@ async function signOut() {
       >
         <template #content="{ message }">
           <template v-for="(part, index) in message.parts">
+            <!-- Render an open-PR tool result as the same clickable list as the picker. -->
+            <PrList
+              v-if="prsFromPart(part)"
+              :key="`${message.id}-prs-${index}`"
+              :prs="prsFromPart(part)!"
+              @select="selectPr"
+            />
             <UChatTool
-              v-if="isToolUIPart(part)"
+              v-else-if="isToolUIPart(part)"
               :key="`${message.id}-tool-${index}`"
               :text="getToolName(part)"
               :streaming="isToolStreaming(part)"

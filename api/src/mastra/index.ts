@@ -7,29 +7,24 @@ import { VercelDeployer } from '@mastra/deployer-vercel';
 import { Observability, MastraStorageExporter, MastraPlatformExporter, SensitiveDataFilter } from '@mastra/observability';
 import { chatRoute } from '@mastra/ai-sdk';
 import { weatherWorkflow } from './workflows/weather-workflow';
-import { codeReviewOrientationWorkflow } from './workflows/code-review-orientation-workflow';
 import { weatherAgent } from './agents/weather-agent';
 import { shortcutAgent } from './agents/shortcut-agent';
 import { githubAgent } from './agents/github-agent';
-import {
-  selectTaskAgent,
-  understandContextAgent,
-  understandRationaleAgent,
-} from './agents/code-review-gates';
+import { orientationGraderAgent } from './agents/orientation-grader';
 import { codeReviewAgent } from './agents/code-review-agent';
 import { toolCallAppropriatenessScorer, completenessScorer, translationScorer } from './scorers/weather-scorer';
+import { orientationGradeAccuracyScorer } from './scorers/orientation-grader-scorer';
 import { shortcutMyTicketsTool, shortcutGetStoryTool } from './tools/shortcut-tool';
 import { githubOpenPullRequestsTool, githubGetPullRequestTool } from './tools/github-tool';
+import { gradeOrientationStageTool } from './tools/orientation-grader-tool';
 
 export const mastra = new Mastra({
-  workflows: { weatherWorkflow, codeReviewOrientationWorkflow },
+  workflows: { weatherWorkflow },
   agents: {
     weatherAgent,
     shortcutAgent,
     githubAgent,
-    selectTaskAgent,
-    understandContextAgent,
-    understandRationaleAgent,
+    orientationGraderAgent,
     codeReviewAgent,
   },
   tools: {
@@ -37,8 +32,9 @@ export const mastra = new Mastra({
     shortcutGetStoryTool,
     githubOpenPullRequestsTool,
     githubGetPullRequestTool,
+    gradeOrientationStageTool,
   },
-  scorers: { toolCallAppropriatenessScorer, completenessScorer, translationScorer },
+  scorers: { toolCallAppropriatenessScorer, completenessScorer, translationScorer, orientationGradeAccuracyScorer },
   storage: new PostgresStore({
     id: 'mastra-storage',
     connectionString: process.env.DATABASE_URL!,
@@ -48,10 +44,16 @@ export const mastra = new Mastra({
   }),
   deployer: new VercelDeployer(),
   server: {
-    auth: new MastraAuthSupabase({
-      url: process.env.SUPABASE_URL,
-      anonKey: process.env.SUPABASE_ANON_KEY,
-    }),
+    // Only guard the server in production. Locally, `mastra dev` runs with
+    // NODE_ENV unset/development so Studio (the playground UI) loads without a
+    // Supabase token. In production the frontend supplies a Bearer token.
+    auth:
+      process.env.NODE_ENV === 'production'
+        ? new MastraAuthSupabase({
+            url: process.env.SUPABASE_URL,
+            anonKey: process.env.SUPABASE_ANON_KEY,
+          })
+        : undefined,
     apiRoutes: [
       chatRoute({ path: '/chat', agent: 'githubAgent', version: 'v6' }),
       chatRoute({ path: '/code-review-chat', agent: 'codeReviewAgent', version: 'v6' }),

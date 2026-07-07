@@ -1,4 +1,6 @@
+import { MastraClient } from '@mastra/client-js'
 import { DefaultChatTransport } from 'ai'
+import type { OpenPullRequestsResult } from '~/utils/github'
 
 /**
  * Provides helpers for talking to the Mastra server as the current Supabase
@@ -11,6 +13,22 @@ export function useMastra() {
   const user = useSupabaseUser()
 
   const baseUrl = config.public.mastraUrl as string
+
+  const client = new MastraClient({
+    baseUrl,
+    fetch: async (input, init) => {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+
+      return fetch(input, {
+        ...init,
+        headers: {
+          ...init?.headers,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      })
+    },
+  })
 
   /**
    * Builds a DefaultChatTransport for an agent's AI SDK chatRoute. On every
@@ -44,5 +62,13 @@ export function useMastra() {
     })
   }
 
-  return { createChatTransport }
+  /**
+   * Fetches the repository's open pull requests (summaries, no diffs) directly,
+   * without an agent round-trip — used to show the PR picker on page load.
+   */
+  async function fetchOpenPullRequests(): Promise<OpenPullRequestsResult> {
+    return client.getTool('githubOpenPullRequestsTool').execute({ data: {} })
+  }
+
+  return { client, createChatTransport, fetchOpenPullRequests }
 }
