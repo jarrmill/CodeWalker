@@ -1,7 +1,6 @@
 <script setup lang="ts">
 const user = useSupabaseUser()
 const supabase = useSupabaseClient()
-const { client } = useMastra()
 
 async function signOut() {
   await supabase.auth.signOut()
