@@ -7,6 +7,7 @@ import type { PullRequestSummary } from '~/utils/github'
 const user = useSupabaseUser()
 const supabase = useSupabaseClient()
 const { createChatTransport, fetchOpenPullRequests } = useMastra()
+const { transcribe, speak } = useVoice()
 const toast = useToast()
 
 const input = ref('')
@@ -64,6 +65,131 @@ function onSubmit() {
   input.value = ''
 }
 
+// True while the agent is producing a reply — used to disable the mic so a
+// recording can't race an in-flight turn.
+const busy = computed(() => chat.status === 'submitted' || chat.status === 'streaming')
+
+// --- Voice input (push-to-talk, auto-submits the transcript) ---------------
+const recording = ref(false)
+const transcribing = ref(false)
+let mediaRecorder: MediaRecorder | null = null
+let chunks: Blob[] = []
+
+async function toggleRecording() {
+  if (recording.value) {
+    stopRecording()
+    return
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    chunks = []
+    mediaRecorder = new MediaRecorder(stream)
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }
+    mediaRecorder.onstop = onRecordingStop
+    mediaRecorder.start()
+    recording.value = true
+  } catch (e: any) {
+    toast.add({ title: 'Microphone unavailable', description: e?.message, color: 'error' })
+  }
+}
+
+function stopRecording() {
+  mediaRecorder?.stop()
+  mediaRecorder?.stream.getTracks().forEach((t) => t.stop())
+  recording.value = false
+}
+
+async function onRecordingStop() {
+  const type = mediaRecorder?.mimeType || 'audio/webm'
+  const blob = new Blob(chunks, { type })
+  chunks = []
+  mediaRecorder = null
+  if (!blob.size) return
+  transcribing.value = true
+  try {
+    const text = await transcribe(blob)
+    if (text) {
+      input.value = text
+      onSubmit()
+    }
+  } catch (e: any) {
+    toast.add({ title: 'Transcription failed', description: e?.message, color: 'error' })
+  } finally {
+    transcribing.value = false
+  }
+}
+
+// --- Voice output (auto-play replies, with a mute toggle) ------------------
+const muted = ref(false)
+const speaking = ref(false)
+const spokenIds = new Set<string>()
+let currentAudio: HTMLAudioElement | null = null
+let currentUrl: string | null = null
+
+function stopAudio() {
+  if (currentAudio) {
+    currentAudio.pause()
+    currentAudio = null
+  }
+  if (currentUrl) {
+    URL.revokeObjectURL(currentUrl)
+    currentUrl = null
+  }
+  speaking.value = false
+}
+
+// Concatenate a message's text parts into the string to synthesize.
+function messageText(message: any): string {
+  return (message?.parts ?? [])
+    .filter((p: any) => isTextUIPart(p))
+    .map((p: any) => p.text)
+    .join(' ')
+    .trim()
+}
+
+async function playText(text: string) {
+  if (!text) return
+  try {
+    const url = await speak(text)
+    stopAudio()
+    currentUrl = url
+    currentAudio = new Audio(url)
+    speaking.value = true
+    currentAudio.onended = stopAudio
+    await currentAudio.play()
+  } catch (e: any) {
+    stopAudio()
+    toast.add({ title: 'Playback failed', description: e?.message, color: 'error' })
+  }
+}
+
+// Replay button on an individual assistant message.
+function playMessage(message: any) {
+  playText(messageText(message))
+}
+
+function toggleMute() {
+  muted.value = !muted.value
+  if (muted.value) stopAudio()
+}
+
+// Speak each assistant reply once, when its turn finishes streaming.
+watch(
+  () => chat.status,
+  (status, prev) => {
+    if (status !== 'ready' || prev === 'ready' || muted.value) return
+    const last = chat.messages[chat.messages.length - 1]
+    if (!last || last.role !== 'assistant' || spokenIds.has(last.id)) return
+    spokenIds.add(last.id)
+    playText(messageText(last))
+  },
+)
+
+onBeforeUnmount(() => {
+  stopRecording()
+  stopAudio()
+})
+
 async function signOut() {
   await supabase.auth.signOut()
   await navigateTo('/login')
@@ -75,6 +201,16 @@ async function signOut() {
     <header class="border-b border-gray-200 dark:border-gray-800 px-6 py-4 flex items-center justify-between shrink-0">
       <h1 class="font-semibold text-lg">Code Review Orientation</h1>
       <div class="flex items-center gap-3">
+        <UButton
+          :icon="muted ? 'i-lucide-volume-x' : 'i-lucide-volume-2'"
+          :color="muted ? 'neutral' : 'primary'"
+          variant="ghost"
+          size="sm"
+          square
+          :aria-label="muted ? 'Unmute spoken replies' : 'Mute spoken replies'"
+          :title="muted ? 'Unmute spoken replies' : 'Mute spoken replies'"
+          @click="toggleMute"
+        />
         <span class="text-sm text-gray-500 dark:text-gray-400">{{ user?.email }}</span>
         <UButton variant="ghost" size="sm" @click="signOut">Sign out</UButton>
       </div>
@@ -119,6 +255,19 @@ async function signOut() {
               {{ part.text }}
             </p>
           </template>
+          <!-- Replay this assistant reply as speech. -->
+          <div v-if="message.role === 'assistant'" class="mt-1">
+            <UButton
+              icon="i-lucide-volume-2"
+              variant="ghost"
+              color="neutral"
+              size="xs"
+              square
+              aria-label="Play this reply"
+              title="Play this reply"
+              @click="playMessage(message)"
+            />
+          </div>
         </template>
       </UChatMessages>
 
@@ -128,6 +277,17 @@ async function signOut() {
         placeholder="Ask about open pull requests, or paste a diff to orient on..."
         @submit="onSubmit"
       >
+        <UButton
+          :icon="recording ? 'i-lucide-square' : 'i-lucide-mic'"
+          :color="recording ? 'error' : 'neutral'"
+          :variant="recording ? 'solid' : 'ghost'"
+          :loading="transcribing"
+          :disabled="busy"
+          square
+          :aria-label="recording ? 'Stop recording' : 'Record a voice message'"
+          :title="recording ? 'Stop recording' : 'Record a voice message'"
+          @click="toggleRecording"
+        />
         <UChatPromptSubmit
           :status="chat.status"
           @stop="chat.stop()"
