@@ -1,5 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 import { Memory } from '@mastra/memory';
+import { OpenAIVoice } from '@mastra/voice-openai';
+import type { MastraVoice } from '@mastra/core/voice';
 import {
   githubOpenPullRequestsTool,
   githubGetPullRequestTool,
@@ -55,4 +57,15 @@ Be concise and practical. Do not invent details that are not present in the chan
     gradeOrientationStageTool,
   },
   memory: new Memory(),
+  // Turn-based voice for the /voice/transcribe (speech-to-text) and
+  // /voice/speak (text-to-speech) routes. Both models read OPENAI_API_KEY
+  // from the environment. whisper-1 and tts-1 are what this provider version
+  // supports; `alloy` is a neutral default speaker.
+  // The cast bridges @mastra/voice-openai's bundled MastraVoice type and the
+  // installed @mastra/core one (they differ only by a nominal #private field).
+  voice: new OpenAIVoice({
+    listeningModel: { name: 'whisper-1' },
+    speechModel: { name: 'tts-1' },
+    speaker: 'alloy',
+  }) as unknown as MastraVoice,
 });
