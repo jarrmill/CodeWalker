@@ -20,6 +20,7 @@
   "dependencies": {
     "@mastra/ai-sdk": "^1.4.5",
     "@mastra/auth-supabase": "^1.0.1",
+    "@mastra/braintrust": "^1.2.3",
     "@mastra/core": "^1.42.0",
     "@mastra/deployer-vercel": "^1.1.37",
     "@mastra/evals": "^1.2.4",
@@ -28,6 +29,7 @@
     "@mastra/observability": "^1.14.1",
     "@mastra/pg": "^1.13.0",
     "@mastra/voice-openai": "^0.13.0",
+    "braintrust": "^3.21.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

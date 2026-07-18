@@ -5,6 +5,7 @@ import { PostgresStore } from '@mastra/pg';
 import { MastraAuthSupabase } from '@mastra/auth-supabase';
 import { VercelDeployer } from '@mastra/deployer-vercel';
 import { Observability, MastraStorageExporter, MastraPlatformExporter, SensitiveDataFilter } from '@mastra/observability';
+import { BraintrustExporter } from '@mastra/braintrust';
 import { chatRoute } from '@mastra/ai-sdk';
 import { voiceRoutes } from './server/voice-routes';
 import { weatherWorkflow } from './workflows/weather-workflow';
@@ -72,6 +73,15 @@ export const mastra = new Mastra({
         exporters: [
           new MastraStorageExporter(), // Persists observability events to Mastra Storage
           new MastraPlatformExporter(), // Sends observability events to Mastra Platform (if MASTRA_PLATFORM_ACCESS_TOKEN is set)
+          // Sends traces to Braintrust for observability (only when BRAINTRUST_API_KEY is set)
+          ...(process.env.BRAINTRUST_API_KEY
+            ? [
+                new BraintrustExporter({
+                  apiKey: process.env.BRAINTRUST_API_KEY,
+                  projectName: process.env.BRAINTRUST_PROJECT_NAME ?? 'codewalker',
+                }),
+              ]
+            : []),
         ],
         spanOutputProcessors: [
           new SensitiveDataFilter(), // Redacts sensitive data like passwords, tokens, keys
