@@ -83,7 +83,7 @@ You are given the stage and its rubric, the diff, the PR description, and the de
 - Put short, specific, actionable coaching in feedback. If understood, a brief confirmation instead.
 - Put confirmed facts the developer got right in notes — these accumulate into the running "story" of the change that later stages rely on.
 - Do not invent details that are not present in the diff or its description. If the explanation is blank, understood=false with feedback inviting an attempt.`,
-  model: 'openai/gpt-5-mini',
+  model: 'openai/gpt-4.1',
 });
 
 export interface GradeOrientationStageInput {

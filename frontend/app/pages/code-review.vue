@@ -58,16 +58,20 @@ function prsFromPart(part: unknown): PullRequestSummary[] | null {
   return null
 }
 
+// True while the agent is producing a reply — used to gate new sends (text and
+// voice) so a submission can't race an in-flight turn, and to disable the mic.
+const busy = computed(() => chat.status === 'submitted' || chat.status === 'streaming')
+
 function onSubmit() {
+  // Ignore submits fired while a turn is still streaming: overlapping sends
+  // append to the same memory thread concurrently and cause the reply to
+  // replay endlessly. Wait for the current turn to finish first.
+  if (busy.value) return
   const text = input.value.trim()
   if (!text) return
   chat.sendMessage({ text })
   input.value = ''
 }
-
-// True while the agent is producing a reply — used to disable the mic so a
-// recording can't race an in-flight turn.
-const busy = computed(() => chat.status === 'submitted' || chat.status === 'streaming')
 
 // --- Voice input (push-to-talk, auto-submits the transcript) ---------------
 const recording = ref(false)
@@ -233,23 +237,20 @@ async function signOut() {
         class="flex-1 min-h-0 overflow-y-auto"
       >
         <template #content="{ message }">
-          <template v-for="(part, index) in message.parts">
+          <template v-for="(part, index) in message.parts" :key="`${message.id}-${index}`">
             <!-- Render an open-PR tool result as the same clickable list as the picker. -->
             <PrList
               v-if="prsFromPart(part)"
-              :key="`${message.id}-prs-${index}`"
               :prs="prsFromPart(part)!"
               @select="selectPr"
             />
             <UChatTool
               v-else-if="isToolUIPart(part)"
-              :key="`${message.id}-tool-${index}`"
               :text="getToolName(part)"
               :streaming="isToolStreaming(part)"
             />
             <p
               v-else-if="isTextUIPart(part)"
-              :key="`${message.id}-text-${index}`"
               class="whitespace-pre-wrap"
             >
               {{ part.text }}

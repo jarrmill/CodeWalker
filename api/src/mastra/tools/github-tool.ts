@@ -30,13 +30,65 @@ interface PullRequest {
 function getGitHubHeaders(): Record<string, string> {
   const token = process.env.GITHUB_TOKEN;
   if (!token) {
-    throw new Error('GITHUB_TOKEN environment variable is not set.');
+    throw new Error(
+      'GITHUB_TOKEN is not set. Add a GitHub token to GITHUB_TOKEN in api/.env and restart the server.',
+    );
   }
   return {
     Accept: 'application/vnd.github+json',
     Authorization: `Bearer ${token}`,
     'X-GitHub-Api-Version': '2022-11-28',
   };
+}
+
+// Turn a failed GitHub response into an actionable error. The important
+// distinction for operators is "the token is bad" (401 / expired / revoked)
+// versus everything else (rate limits, missing permissions, transient errors),
+// since a generic "401 Unauthorized" gives no hint that GITHUB_TOKEN is the
+// thing to fix. Only reads the body on failure; callers still read it on success.
+async function assertGitHubOk(response: Response, context: string): Promise<void> {
+  if (response.ok) {
+    return;
+  }
+
+  // GitHub returns a JSON body with a human-readable `message` on errors, even
+  // for the diff endpoint. Surface it when present for extra context.
+  let apiMessage = '';
+  try {
+    const body = (await response.json()) as { message?: string };
+    if (body?.message) {
+      apiMessage = ` GitHub said: "${body.message}".`;
+    }
+  } catch {
+    // Body wasn't JSON — nothing extra to add.
+  }
+
+  if (response.status === 401) {
+    throw new Error(
+      `${context}: GitHub rejected the credentials (401 Unauthorized). The GITHUB_TOKEN is ` +
+        `invalid, expired, or revoked. Generate a new token, update GITHUB_TOKEN in api/.env, ` +
+        `and restart the server.${apiMessage}`,
+    );
+  }
+
+  if (response.status === 403) {
+    const remaining = response.headers.get('x-ratelimit-remaining');
+    if (remaining === '0') {
+      const reset = response.headers.get('x-ratelimit-reset');
+      const resetHint = reset
+        ? ` Rate limit resets at ${new Date(Number(reset) * 1000).toISOString()}.`
+        : '';
+      throw new Error(
+        `${context}: GitHub API rate limit exceeded (403 Forbidden).${resetHint}${apiMessage}`,
+      );
+    }
+    throw new Error(
+      `${context}: GitHub denied access (403 Forbidden). The token is valid but lacks ` +
+        `permission for this repository or resource — check the token's scopes and repo access.${apiMessage}`,
+    );
+  }
+
+  throw new Error(`${context}: ${response.status} ${response.statusText}.${apiMessage}`);
 }
 
 const pullRequestSchema = z.object({
@@ -88,6 +140,15 @@ const pullRequestDetailSchema = z.object({
   diffTruncated: z.boolean(),
 });
 
+type PullRequestDetail = z.infer<typeof pullRequestDetailSchema>;
+
+// During an orientation session the agent re-fetches the same PR on every grade
+// turn (it needs the diff to pass to the grader). PR contents don't change
+// mid-session, so cache each fetched PR briefly to turn those repeat calls into
+// cache hits instead of two fresh GitHub round-trips (metadata + diff) each time.
+const PR_CACHE_TTL_MS = 5 * 60 * 1000;
+const pullRequestCache = new Map<string, { detail: PullRequestDetail; expiresAt: number }>();
+
 export const githubGetPullRequestTool = createTool({
   id: 'get-github-pull-request',
   description:
@@ -124,11 +185,7 @@ const getOpenPullRequests = async ({ owner, repo }: { owner: string; repo: strin
     if (response.status === 404) {
       throw new Error(`Repository ${owner}/${repo} was not found.`);
     }
-    if (!response.ok) {
-      throw new Error(
-        `Failed to fetch open pull requests: ${response.status} ${response.statusText}`,
-      );
-    }
+    await assertGitHubOk(response, 'Failed to fetch open pull requests');
 
     const page_data = (await response.json()) as PullRequest[];
     pullRequests.push(...page_data);
@@ -166,7 +223,13 @@ const getPullRequest = async ({
   owner: string;
   repo: string;
   pullNumber: number;
-}) => {
+}): Promise<PullRequestDetail> => {
+  const cacheKey = `${owner}/${repo}#${pullNumber}`;
+  const cached = pullRequestCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.detail;
+  }
+
   const headers = getGitHubHeaders();
   const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/pulls/${pullNumber}`;
 
@@ -174,21 +237,13 @@ const getPullRequest = async ({
   if (metaResponse.status === 404) {
     throw new Error(`Pull request #${pullNumber} was not found in ${owner}/${repo}.`);
   }
-  if (!metaResponse.ok) {
-    throw new Error(
-      `Failed to fetch pull request #${pullNumber}: ${metaResponse.status} ${metaResponse.statusText}`,
-    );
-  }
+  await assertGitHubOk(metaResponse, `Failed to fetch pull request #${pullNumber}`);
   const pr = (await metaResponse.json()) as PullRequest;
 
   const diffResponse = await fetch(url, {
     headers: { ...headers, Accept: 'application/vnd.github.diff' },
   });
-  if (!diffResponse.ok) {
-    throw new Error(
-      `Failed to fetch diff for pull request #${pullNumber}: ${diffResponse.status} ${diffResponse.statusText}`,
-    );
-  }
+  await assertGitHubOk(diffResponse, `Failed to fetch diff for pull request #${pullNumber}`);
 
   let diff = await diffResponse.text();
   const diffTruncated = diff.length > MAX_DIFF_CHARS;
@@ -196,7 +251,7 @@ const getPullRequest = async ({
     diff = `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated at ${MAX_DIFF_CHARS} characters]`;
   }
 
-  return {
+  const detail: PullRequestDetail = {
     number: pr.number,
     title: pr.title,
     description: pr.body ?? '',
@@ -207,4 +262,7 @@ const getPullRequest = async ({
     diff,
     diffTruncated,
   };
+
+  pullRequestCache.set(cacheKey, { detail, expiresAt: Date.now() + PR_CACHE_TTL_MS });
+  return detail;
 };
