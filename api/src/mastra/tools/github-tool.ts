@@ -1,5 +1,6 @@
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
+import { setReviewContext } from './review-context';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 const DEFAULT_OWNER = 'jarrmill';
@@ -128,6 +129,92 @@ export const githubOpenPullRequestsTool = createTool({
 
 const MAX_DIFF_CHARS = 60000;
 
+// Files whose diffs are pure noise when building orientation on a change:
+// dependency lock files and generated/build output. A single package-lock.json
+// change is often tens of thousands of lines, which balloons the context the
+// agent and grader must read and can push the actual source changes past the
+// truncation limit. We drop these sections before the diff enters the model.
+const EXCLUDED_DIFF_PATHS = [
+  /(^|\/)package-lock\.json$/,
+  /(^|\/)npm-shrinkwrap\.json$/,
+  /(^|\/)yarn\.lock$/,
+  /(^|\/)pnpm-lock\.yaml$/,
+  /(^|\/)bun\.lockb$/,
+  /(^|\/)composer\.lock$/,
+  /(^|\/)Gemfile\.lock$/,
+  /(^|\/)poetry\.lock$/,
+  /(^|\/)Cargo\.lock$/,
+  /(^|\/)go\.sum$/,
+  /(^|\/)dist\//,
+  /(^|\/)build\//,
+  /\.min\.(js|css)$/,
+  /\.map$/,
+];
+
+interface FilteredDiff {
+  diff: string;
+  excludedFiles: string[];
+}
+
+// Split a unified diff into its per-file sections and drop the ones that are
+// just dependency lock files or generated output. Each section starts with a
+// `diff --git a/<path> b/<path>` header; splitting on a lookahead for that
+// header keeps every file's hunks together with it.
+function filterDiff(raw: string): FilteredDiff {
+  if (!raw.trim()) {
+    return { diff: raw, excludedFiles: [] };
+  }
+
+  const sections = raw.split(/(?=^diff --git )/m);
+  const kept: string[] = [];
+  const excludedFiles: string[] = [];
+
+  for (const section of sections) {
+    const match = section.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
+    // Anything before the first `diff --git` header (rare preamble) is kept.
+    if (!match) {
+      if (section.trim()) {
+        kept.push(section);
+      }
+      continue;
+    }
+
+    const path = match[2];
+    if (EXCLUDED_DIFF_PATHS.some((pattern) => pattern.test(path))) {
+      excludedFiles.push(path);
+    } else {
+      kept.push(section);
+    }
+  }
+
+  return { diff: kept.join(''), excludedFiles };
+}
+
+/**
+ * Turn a raw unified diff into the form stored and reviewed: noise files
+ * filtered out (with a note listing what was dropped), then capped at
+ * MAX_DIFF_CHARS. Shared by the PR fetch and the pasted-diff loader so both
+ * paths present diffs the same way.
+ */
+export function prepareDiff(raw: string): { diff: string; diffTruncated: boolean } {
+  const { diff: filteredDiff, excludedFiles } = filterDiff(raw);
+
+  // Note the omitted files so the reader knows they changed but were dropped
+  // as noise, rather than silently disappearing from the diff.
+  let diff = filteredDiff;
+  if (excludedFiles.length > 0) {
+    const note = `[omitted ${excludedFiles.length} generated/lock file(s) from the diff: ${excludedFiles.join(', ')}]`;
+    diff = diff.trim() ? `${diff.trimEnd()}\n\n${note}\n` : `${note}\n`;
+  }
+
+  const diffTruncated = diff.length > MAX_DIFF_CHARS;
+  if (diffTruncated) {
+    diff = `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated at ${MAX_DIFF_CHARS} characters]`;
+  }
+
+  return { diff, diffTruncated };
+}
+
 const pullRequestDetailSchema = z.object({
   number: z.number(),
   title: z.string(),
@@ -162,8 +249,15 @@ export const githubGetPullRequestTool = createTool({
     pullNumber: z.number().describe('The pull request number to fetch.'),
   }),
   outputSchema: pullRequestDetailSchema,
-  execute: async ({ owner, repo, pullNumber }) => {
-    return await getPullRequest({ owner, repo, pullNumber });
+  execute: async ({ owner, repo, pullNumber }, context) => {
+    const detail = await getPullRequest({ owner, repo, pullNumber });
+    // Record the fetched change as this session's review context so the grader
+    // reads the diff server-side instead of the model re-sending it every turn.
+    setReviewContext(context?.agent?.threadId, {
+      diff: detail.diff,
+      prDescription: detail.description,
+    });
+    return detail;
   },
 });
 
@@ -245,11 +339,7 @@ const getPullRequest = async ({
   });
   await assertGitHubOk(diffResponse, `Failed to fetch diff for pull request #${pullNumber}`);
 
-  let diff = await diffResponse.text();
-  const diffTruncated = diff.length > MAX_DIFF_CHARS;
-  if (diffTruncated) {
-    diff = `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated at ${MAX_DIFF_CHARS} characters]`;
-  }
+  const { diff, diffTruncated } = prepareDiff(await diffResponse.text());
 
   const detail: PullRequestDetail = {
     number: pr.number,
