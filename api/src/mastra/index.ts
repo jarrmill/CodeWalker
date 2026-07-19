@@ -18,7 +18,7 @@ import { toolCallAppropriatenessScorer, completenessScorer, translationScorer } 
 import { orientationGradeAccuracyScorer } from './scorers/orientation-grader-scorer';
 import { shortcutMyTicketsTool, shortcutGetStoryTool } from './tools/shortcut-tool';
 import { githubOpenPullRequestsTool, githubGetPullRequestTool } from './tools/github-tool';
-import { gradeOrientationStageTool } from './tools/orientation-grader-tool';
+import { gradeOrientationStageTool, loadPastedDiffTool } from './tools/orientation-grader-tool';
 
 export const mastra = new Mastra({
   workflows: { weatherWorkflow },
@@ -35,6 +35,7 @@ export const mastra = new Mastra({
     githubOpenPullRequestsTool,
     githubGetPullRequestTool,
     gradeOrientationStageTool,
+    loadPastedDiffTool,
   },
   scorers: { toolCallAppropriatenessScorer, completenessScorer, translationScorer, orientationGradeAccuracyScorer },
   storage: new PostgresStore({
