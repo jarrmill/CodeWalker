@@ -38,7 +38,7 @@ export const gradeOrientationStageTool = createTool({
   }),
   outputSchema: gateGradeSchema,
   execute: async ({ stage, explanation, priorNotes }, context) => {
-    const review = getReviewContext(context?.agent?.threadId);
+    const review = await getReviewContext(context);
     if (!review) {
       throw new Error(
         'No change is loaded for this session yet. Load a pull request with ' +
@@ -82,7 +82,7 @@ export const loadPastedDiffTool = createTool({
   }),
   execute: async ({ diff, prDescription }, context) => {
     const { diff: prepared, diffTruncated } = prepareDiff(diff);
-    setReviewContext(context?.agent?.threadId, { diff: prepared, prDescription });
+    await setReviewContext(context, { diff: prepared, prDescription });
     return { loaded: true, diffTruncated };
   },
 });

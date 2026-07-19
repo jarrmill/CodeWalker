@@ -253,7 +253,7 @@ export const githubGetPullRequestTool = createTool({
     const detail = await getPullRequest({ owner, repo, pullNumber });
     // Record the fetched change as this session's review context so the grader
     // reads the diff server-side instead of the model re-sending it every turn.
-    setReviewContext(context?.agent?.threadId, {
+    await setReviewContext(context, {
       diff: detail.diff,
       prDescription: detail.description,
     });

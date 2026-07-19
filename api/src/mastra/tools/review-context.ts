@@ -10,29 +10,20 @@
  * thread, means it travels through the model exactly once (when the change is
  * loaded) and the grader reads it directly.
  *
- * The server keeps this in process memory, matching the existing in-process PR
- * cache in github-tool. Entries carry a TTL so abandoned sessions don't
- * accumulate. If an entry is missing (e.g. a fresh process), the grader tool
- * surfaces a clear error and the agent reloads the change.
+ * Where it lives: on the memory thread's `metadata`, under a dedicated key that
+ * is deliberately NOT Mastra's reserved `workingMemory` metadata key (whose
+ * contents get folded into the system prompt). So the diff persists in the same
+ * Postgres store as the conversation — surviving restarts and, on serverless,
+ * routing across instances — without ever re-entering the model's context. If
+ * the thread or its review context is missing, the grader tool surfaces a clear
+ * error and the agent reloads the change.
  */
+import type { MastraMemory } from '@mastra/core/memory';
 
-interface ReviewContextEntry {
-  diff: string;
-  prDescription: string;
-  expiresAt: number;
-}
-
-const REVIEW_CONTEXT_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-const reviewContextByThread = new Map<string, ReviewContextEntry>();
-
-function pruneExpired(now: number): void {
-  for (const [threadId, entry] of reviewContextByThread) {
-    if (entry.expiresAt <= now) {
-      reviewContextByThread.delete(threadId);
-    }
-  }
-}
+// The thread-metadata key our review context lives under. Deliberately distinct
+// from Mastra's reserved `workingMemory` key, whose contents are injected into
+// the model's context — the whole point here is to keep the diff OUT of it.
+const REVIEW_CONTEXT_METADATA_KEY = 'codeReviewContext';
 
 export interface ReviewContext {
   diff: string;
@@ -40,34 +31,95 @@ export interface ReviewContext {
 }
 
 /**
- * Record the change under review for a memory thread. No-ops without a threadId
- * (nothing to key on) rather than sharing a single slot across users.
+ * The slice of a tool's execution context these helpers need to reach the
+ * memory thread. Kept structural (rather than importing the heavily-generic
+ * ToolExecutionContext) so it stays stable across @mastra/core versions and so
+ * the generic `getAgentById` signature doesn't leak into every call site.
  */
-export function setReviewContext(threadId: string | undefined, context: ReviewContext): void {
+export interface ReviewToolContext {
+  mastra?: {
+    getAgentById: (id: string) => { getMemory: () => Promise<MastraMemory | undefined> } | undefined;
+  };
+  agent?: {
+    agentId?: string;
+    threadId?: string;
+    resourceId?: string;
+  };
+}
+
+/**
+ * Resolve the Memory belonging to the agent that is currently executing — the
+ * one Mastra wired to the shared Postgres store. Returns undefined if we can't
+ * get there (no agent id, no memory), so callers can degrade gracefully rather
+ * than throw mid-tool.
+ */
+async function resolveMemory(context: ReviewToolContext): Promise<MastraMemory | undefined> {
+  const agentId = context.agent?.agentId;
+  if (!agentId) {
+    return undefined;
+  }
+  const agent = context.mastra?.getAgentById(agentId);
+  return agent ? await agent.getMemory() : undefined;
+}
+
+/**
+ * Record the change under review on its memory thread. No-ops without a
+ * threadId (nothing to key on) or when memory is unavailable, rather than
+ * throwing from inside a tool.
+ */
+export async function setReviewContext(
+  context: ReviewToolContext,
+  review: ReviewContext,
+): Promise<void> {
+  const threadId = context.agent?.threadId;
   if (!threadId) {
     return;
   }
-  const now = Date.now();
-  pruneExpired(now);
-  reviewContextByThread.set(threadId, {
-    diff: context.diff,
-    prDescription: context.prDescription,
-    expiresAt: now + REVIEW_CONTEXT_TTL_MS,
+  const memory = await resolveMemory(context);
+  if (!memory) {
+    return;
+  }
+
+  const existing = await memory.getThreadById({ threadId });
+  // Merge into any existing metadata so we don't clobber other keys stored
+  // there (e.g. Mastra's own thread bookkeeping).
+  const metadata = { ...(existing?.metadata ?? {}), [REVIEW_CONTEXT_METADATA_KEY]: review };
+
+  if (existing) {
+    await memory.updateThread({ id: threadId, title: existing.title ?? '', metadata });
+    return;
+  }
+
+  // No thread persisted yet (e.g. a tool invoked before the first message was
+  // saved). Create it so the review context has somewhere to live. Creating a
+  // thread requires a resourceId; without one there's nothing we can key on.
+  const resourceId = context.agent?.resourceId;
+  if (!resourceId) {
+    return;
+  }
+  const now = new Date();
+  await memory.saveThread({
+    thread: { id: threadId, resourceId, metadata, createdAt: now, updatedAt: now },
   });
 }
 
-/** Read the change under review for a thread, or undefined if none is loaded. */
-export function getReviewContext(threadId: string | undefined): ReviewContext | undefined {
+/** Read the change under review for this thread, or undefined if none is loaded. */
+export async function getReviewContext(
+  context: ReviewToolContext,
+): Promise<ReviewContext | undefined> {
+  const threadId = context.agent?.threadId;
   if (!threadId) {
     return undefined;
   }
-  const entry = reviewContextByThread.get(threadId);
-  if (!entry) {
+  const memory = await resolveMemory(context);
+  if (!memory) {
     return undefined;
   }
-  if (entry.expiresAt <= Date.now()) {
-    reviewContextByThread.delete(threadId);
+
+  const thread = await memory.getThreadById({ threadId });
+  const stored = thread?.metadata?.[REVIEW_CONTEXT_METADATA_KEY] as ReviewContext | undefined;
+  if (!stored) {
     return undefined;
   }
-  return { diff: entry.diff, prDescription: entry.prDescription };
+  return { diff: stored.diff, prDescription: stored.prDescription };
 }
