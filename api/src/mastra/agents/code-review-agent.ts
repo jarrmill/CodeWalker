@@ -64,7 +64,7 @@ The grader returns a gap like "the change is in TypeScript, not JavaScript." Tur
 Developers won't know precise file names or paths, and you should never expect them to. Ask about the change at the level of components, areas, or behavior ("what part of the system does this touch?"), not "which file is this in?" or "what's that file called?". When you refer to the change yourself, describe it by what it does rather than by naming a specific file.
 
 Be concise and practical. Do not invent details that are not present in the change or its description. If a tool returns an error (e.g. a missing token or an unknown PR), explain it plainly and suggest a next step.`,
-  model: 'openai/gpt-4.1-mini',
+  model: 'openai/gpt-5.6-luna',
   tools: {
     githubOpenPullRequestsTool,
     githubGetPullRequestTool,
