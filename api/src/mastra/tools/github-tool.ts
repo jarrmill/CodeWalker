@@ -309,13 +309,13 @@ const getOpenPullRequests = async ({ owner, repo }: { owner: string; repo: strin
   };
 };
 
-const getPullRequest = async ({
-  owner,
-  repo,
+export const getPullRequest = async ({
+  owner = DEFAULT_OWNER,
+  repo = DEFAULT_REPO,
   pullNumber,
 }: {
-  owner: string;
-  repo: string;
+  owner?: string;
+  repo?: string;
   pullNumber: number;
 }): Promise<PullRequestDetail> => {
   const cacheKey = `${owner}/${repo}#${pullNumber}`;
