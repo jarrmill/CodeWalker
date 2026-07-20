@@ -33,6 +33,21 @@ async function signOut() {
             Start a review
           </UButton>
         </div>
+
+        <div class="rounded-lg border border-gray-200 dark:border-gray-800 p-6">
+          <div class="flex items-center gap-2 mb-2">
+            <h3 class="text-lg font-semibold">Code Review Orientation (Live)</h3>
+            <UBadge color="primary" variant="subtle" size="sm">Experimental</UBadge>
+          </div>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            The same coaching, as a real-time spoken conversation. Talk out loud
+            and hear replies back instantly — no typing, no turns. An experiment
+            in a more natural, back-and-forth way to orient on a change.
+          </p>
+          <UButton to="/code-review-live" size="lg" variant="soft">
+            Start a live review
+          </UButton>
+        </div>
       </div>
     </main>
   </div>
