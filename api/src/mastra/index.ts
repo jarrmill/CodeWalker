@@ -8,6 +8,7 @@ import { Observability, MastraStorageExporter, MastraPlatformExporter, Sensitive
 import { BraintrustExporter } from '@mastra/braintrust';
 import { chatRoute } from '@mastra/ai-sdk';
 import { voiceRoutes } from './server/voice-routes';
+import { realtimeRoutes } from './server/realtime-routes';
 import { weatherWorkflow } from './workflows/weather-workflow';
 import { weatherAgent } from './agents/weather-agent';
 import { shortcutAgent } from './agents/shortcut-agent';
@@ -61,6 +62,7 @@ export const mastra = new Mastra({
       chatRoute({ path: '/chat', agent: 'githubAgent', version: 'v6' }),
       chatRoute({ path: '/code-review-chat', agent: 'codeReviewAgent', version: 'v6' }),
       ...voiceRoutes,
+      ...realtimeRoutes,
     ],
   },
   logger: new PinoLogger({
